@@ -149,7 +149,23 @@ export default {
 					let pagesSum = UD;
 					let workersSum = UD;
 					let total = 24 * 1099511627776 ;
-
+					if (env.CFEMAIL && env.CFKEY){
+						const email = env.CFEMAIL;
+						const key = env.CFKEY;
+						const accountIndex = env.CFID || 0;
+						const accountId = await 获取账号信息(email, key);
+						if (accountId){
+							const now = new Date()
+							now.setUTCHours(0, 0, 0, 0)
+							const startDate = now.toISOString()
+							const endDate = new Date().toISOString();
+							const Sum = await 查询使用量(accountId, accountIndex, email, key, startDate, endDate);
+							pagesSum = Sum[0];
+							workersSum = Sum[1];
+							total = 102400 ;
+						}
+					}
+					//console.log(`pagesSum: ${pagesSum}\nworkersSum: ${workersSum}\ntotal: ${total}`);
 					if (userAgent && userAgent.includes('mozilla')){
 						return new Response(`${vlessConfig}`, {
 							status: 200,
@@ -1433,6 +1449,84 @@ ${atob('dGVsZWdyYW0g5Lqk5rWB576kIOaKgOacr+Wkp+S9rH7lnKjnur/lj5HniYwhCmh0dHBzOi8v
 			console.error('Error fetching content:', error);
 			return `Error fetching content: ${error.message}`;
 		}
+	}
+}
+async function 获取账号信息(email, key) {
+	try {
+		const url = 'https://api.cloudflare.com/client/v4/accounts';
+		const headers = new Headers({
+			'X-AUTH-EMAIL': email,
+			'X-AUTH-KEY': key
+		});
+		const response = await fetch(url, { headers });
+		const data = await response.json();
+		return data.result[0].id; // 假设我们需要第一个账号ID
+	} catch (error) {
+		return false ;
+	}
+}
+
+async function 查询使用量(accountId, accountIndex, email, key, startDate, endDate) {
+	try {
+		const startDateISO = new Date(startDate).toISOString();
+		const endDateISO = new Date(endDate).toISOString();
+
+		const query = JSON.stringify({
+			query: `query getBillingMetrics($accountId: String!, $filter: AccountWorkersInvocationsAdaptiveFilter_InputObject) {
+				viewer {
+					accounts(filter: {accountTag: $accountId}) {
+						pagesFunctionsInvocationsAdaptiveGroups(limit: 1000, filter: $filter) {
+							sum {
+								requests
+							}
+						}
+						workersInvocationsAdaptive(limit: 10000, filter: $filter) {
+							sum {
+								requests
+							}
+						}
+					}
+				}
+			}`,
+			variables: {
+				accountId,
+				filter: { datetime_geq: startDateISO, datetime_leq: endDateISO }
+			},
+		});
+
+		const headers = new Headers({
+			'Content-Type': 'application/json',
+			'X-AUTH-EMAIL': email,
+			'X-AUTH-KEY': key,
+		});
+
+		const response = await fetch(`https://api.cloudflare.com/client/v4/graphql`, {
+			method: 'POST',
+			headers: headers,
+			body: query
+		});
+
+		if (!response.ok) {
+			throw new Error(`HTTP error! status: ${response.status}`);
+		}
+
+		const res = await response.json();
+
+		const pagesFunctionsInvocationsAdaptiveGroups = res?.data?.viewer?.accounts?.[accountIndex]?.pagesFunctionsInvocationsAdaptiveGroups;
+		const workersInvocationsAdaptive = res?.data?.viewer?.accounts?.[accountIndex]?.workersInvocationsAdaptive;
+
+		if (!pagesFunctionsInvocationsAdaptiveGroups && !workersInvocationsAdaptive) {
+			throw new Error('找不到数据');
+		}
+
+		const pagesSum = pagesFunctionsInvocationsAdaptiveGroups.reduce((a, b) => a + b?.sum.requests, 0);
+		const workersSum = workersInvocationsAdaptive.reduce((a, b) => a + b?.sum.requests, 0);
+
+		//console.log(`范围: ${startDateISO} ~ ${endDateISO}\n默认取第 ${accountIndex} 项`);
+
+		return [pagesSum, workersSum ];
+	} catch (error) {
+		return [ 0,0 ];
 	}
 }
 
